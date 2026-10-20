@@ -1,0 +1,1210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Octopus Laundry</title>
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #f1dfc7;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+</head>
+<body>
+<script type="module">
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
+
+const LOOP = 20;
+const TAU = Math.PI * 2;
+const TABLE_SURFACE = 1.5;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xf1dfc7);
+scene.fog = new THREE.Fog(0xf1dfc7, 16, 38);
+
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 60);
+
+const renderer = new THREE.WebGLRenderer({
+  antialias: true,
+  powerPreference: "high-performance"
+});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
+document.body.appendChild(renderer.domElement);
+
+const hemisphere = new THREE.HemisphereLight(0xfff4df, 0x8a7182, 2.1);
+scene.add(hemisphere);
+
+const keyLight = new THREE.DirectionalLight(0xffe1b4, 3.4);
+keyLight.position.set(-4.5, 8, 5.5);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.left = -6;
+keyLight.shadow.camera.right = 6;
+keyLight.shadow.camera.top = 6;
+keyLight.shadow.camera.bottom = -6;
+keyLight.shadow.camera.near = 0.5;
+keyLight.shadow.camera.far = 22;
+keyLight.shadow.bias = -0.0004;
+keyLight.shadow.normalBias = 0.025;
+scene.add(keyLight);
+
+const fillLight = new THREE.DirectionalLight(0xb8d9ff, 1.15);
+fillLight.position.set(5, 4, -3);
+scene.add(fillLight);
+
+const tableLight = new THREE.PointLight(0xffc987, 1.4, 9, 2);
+tableLight.position.set(0, 4.5, 1);
+scene.add(tableLight);
+
+const smoothstep = (a, b, x) => {
+  const t = THREE.MathUtils.clamp((x - a) / (b - a), 0, 1);
+  return t * t * (3 - 2 * t);
+};
+
+let randomSeed = 8173;
+const random = () => {
+  randomSeed = (randomSeed * 16807) % 2147483647;
+  return (randomSeed - 1) / 2147483646;
+};
+
+function makeCanvasTexture(width, height, draw) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  draw(canvas.getContext("2d"), width, height);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  return texture;
+}
+
+const woodTexture = makeCanvasTexture(1024, 256, (ctx, w, h) => {
+  ctx.fillStyle = "#b77843";
+  ctx.fillRect(0, 0, w, h);
+
+  for (let i = 0; i < 190; i++) {
+    const y = random() * h;
+    const amplitude = 2 + random() * 8;
+    const alpha = 0.025 + random() * 0.09;
+    ctx.strokeStyle = `rgba(74, 39, 19, ${alpha})`;
+    ctx.lineWidth = 0.6 + random() * 2.2;
+    ctx.beginPath();
+    for (let x = 0; x <= w; x += 18) {
+      const yy = y + Math.sin(x * 0.014 + i) * amplitude * 0.22;
+      if (x === 0) ctx.moveTo(x, yy);
+      else ctx.lineTo(x, yy);
+    }
+    ctx.stroke();
+  }
+
+  for (let i = 0; i < 13; i++) {
+    const x = random() * w;
+    const y = random() * h;
+    for (let ring = 0; ring < 4; ring++) {
+      ctx.strokeStyle = `rgba(80, 41, 19, ${0.08 - ring * 0.015})`;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.ellipse(x, y, 8 + ring * 6, 2 + ring * 2, 0, 0, TAU);
+      ctx.stroke();
+    }
+  }
+});
+woodTexture.wrapS = woodTexture.wrapT = THREE.RepeatWrapping;
+
+const fabricTexture = makeCanvasTexture(128, 128, (ctx, w, h) => {
+  ctx.fillStyle = "#f4f2ed";
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = "rgba(110, 105, 100, 0.12)";
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 128; i += 4) {
+    ctx.beginPath();
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i, h);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, i);
+    ctx.lineTo(w, i);
+    ctx.stroke();
+  }
+});
+fabricTexture.wrapS = fabricTexture.wrapT = THREE.RepeatWrapping;
+fabricTexture.repeat.set(4, 4);
+
+function roundedRectShape(w, h, r) {
+  const x = -w / 2;
+  const y = -h / 2;
+  const shape = new THREE.Shape();
+  shape.moveTo(x + r, y);
+  shape.lineTo(x + w - r, y);
+  shape.quadraticCurveTo(x + w, y, x + w, y + r);
+  shape.lineTo(x + w, y + h - r);
+  shape.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  shape.lineTo(x + r, y + h);
+  shape.quadraticCurveTo(x, y + h, x, y + h - r);
+  shape.lineTo(x, y + r);
+  shape.quadraticCurveTo(x, y, x + r, y);
+  shape.closePath();
+  return shape;
+}
+
+function roundedSlabGeometry(w, h, depth, radius) {
+  const bevel = Math.min(0.018, depth * 0.22, radius * 0.18);
+  const geometry = new THREE.ExtrudeGeometry(roundedRectShape(w, h, radius), {
+    depth,
+    bevelEnabled: true,
+    bevelThickness: bevel,
+    bevelSize: bevel,
+    bevelSegments: 2,
+    curveSegments: 8
+  });
+  geometry.translate(0, 0, -depth / 2);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function addMesh(geometry, material, parent = scene) {
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  parent.add(mesh);
+  return mesh;
+}
+
+function addRod(a, b, radius, material, parent = scene) {
+  const direction = new THREE.Vector3().subVectors(b, a);
+  const mesh = addMesh(
+    new THREE.CylinderGeometry(radius, radius, direction.length(), 10),
+    material,
+    parent
+  );
+  mesh.position.copy(a).add(b).multiplyScalar(0.5);
+  mesh.quaternion.setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    direction.normalize()
+  );
+  return mesh;
+}
+
+const floorMaterial = new THREE.MeshStandardMaterial({
+  color: 0xdac6a9,
+  roughness: 0.96
+});
+const floor = addMesh(new THREE.PlaneGeometry(40, 40), floorMaterial);
+floor.rotation.x = -Math.PI / 2;
+floor.castShadow = false;
+
+const rugMaterial = new THREE.MeshStandardMaterial({
+  color: 0xc9867a,
+  roughness: 1
+});
+const rug = addMesh(new THREE.CircleGeometry(4.15, 80), rugMaterial);
+rug.rotation.x = -Math.PI / 2;
+rug.position.y = 0.012;
+rug.castShadow = false;
+
+const rugRim = addMesh(
+  new THREE.TorusGeometry(3.72, 0.035, 8, 100),
+  new THREE.MeshStandardMaterial({ color: 0xead5b6, roughness: 1 })
+);
+rugRim.rotation.x = -Math.PI / 2;
+rugRim.position.y = 0.018;
+rugRim.castShadow = false;
+
+const woodMaterials = [0xffffff, 0xf5e7d7, 0xffeed7, 0xead7c1, 0xfff2df, 0xf3dfc8, 0xffead2]
+  .map(color => new THREE.MeshStandardMaterial({
+    map: woodTexture,
+    color,
+    roughness: 0.76
+  }));
+
+for (let i = 0; i < 7; i++) {
+  const plank = addMesh(
+    new THREE.BoxGeometry(5.38, 0.2, 0.392),
+    woodMaterials[i]
+  );
+  plank.position.set(0, 1.4, (i - 3) * 0.4);
+}
+
+const darkWood = new THREE.MeshStandardMaterial({
+  color: 0x805232,
+  roughness: 0.82
+});
+
+const apron = addMesh(new THREE.BoxGeometry(4.8, 0.22, 0.15), darkWood);
+apron.position.set(0, 1.18, 1.18);
+const backApron = apron.clone();
+backApron.position.z = -1.18;
+
+const legPositions = [
+  [-2.12, 0.98],
+  [2.12, 0.98],
+  [-2.12, -0.98],
+  [2.12, -0.98]
+];
+
+for (const [x, z] of legPositions) {
+  const leg = addMesh(
+    new THREE.CylinderGeometry(0.12, 0.155, 1.25, 12),
+    darkWood
+  );
+  leg.position.set(x, 0.625, z);
+  leg.rotation.z = x < 0 ? -0.055 : 0.055;
+  leg.rotation.x = z > 0 ? -0.045 : 0.045;
+}
+
+const stretcher = addMesh(new THREE.BoxGeometry(4.1, 0.11, 0.11), darkWood);
+stretcher.position.set(0, 0.42, 0);
+
+const matMaterial = new THREE.MeshStandardMaterial({
+  color: 0xcbd4b9,
+  map: fabricTexture,
+  roughness: 1
+});
+const foldingMat = addMesh(
+  roundedSlabGeometry(1.65, 1.08, 0.018, 0.13),
+  matMaterial
+);
+foldingMat.rotation.x = -Math.PI / 2;
+foldingMat.position.set(-0.05, TABLE_SURFACE + 0.012, 0.14);
+
+function makeStaticFolded(width, height, depth, color, x, y, z, angle = 0) {
+  const material = new THREE.MeshStandardMaterial({
+    color,
+    map: fabricTexture,
+    roughness: 0.98
+  });
+  const mesh = addMesh(roundedSlabGeometry(width, height, depth, 0.08), material);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.rotation.z = angle;
+  mesh.position.set(x, y, z);
+
+  const seamMaterial = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(color).multiplyScalar(0.78),
+    roughness: 1
+  });
+  const seam = addMesh(
+    new THREE.BoxGeometry(width * 0.83, 0.014, 0.012),
+    seamMaterial,
+    mesh
+  );
+  seam.position.set(0, 0.07, depth / 2 + 0.007);
+  return mesh;
+}
+
+makeStaticFolded(0.88, 0.5, 0.085, 0xefe1c2, -1.74, TABLE_SURFACE + 0.052, 0.13, -0.035);
+makeStaticFolded(0.82, 0.47, 0.08, 0xa9b99d, -1.7, TABLE_SURFACE + 0.143, 0.17, 0.04);
+
+const basket = new THREE.Group();
+basket.position.set(1.72, TABLE_SURFACE + 0.015, 0.3);
+scene.add(basket);
+
+const wickerMaterial = new THREE.MeshStandardMaterial({
+  color: 0xc58b52,
+  roughness: 0.87
+});
+const wickerLight = new THREE.MeshStandardMaterial({
+  color: 0xdaa56a,
+  roughness: 0.9
+});
+const wickerDark = new THREE.MeshStandardMaterial({
+  color: 0x9b6539,
+  roughness: 0.88
+});
+
+const basketBase = addMesh(
+  new THREE.BoxGeometry(1.4, 0.11, 1.0),
+  wickerDark,
+  basket
+);
+basketBase.position.y = 0.055;
+
+for (const y of [0.15, 0.31, 0.47, 0.63]) {
+  for (const z of [-0.505, 0.505]) {
+    const strip = addMesh(
+      new THREE.BoxGeometry(1.46, 0.065, 0.07),
+      y === 0.63 ? wickerDark : wickerMaterial,
+      basket
+    );
+    strip.position.set(0, y, z);
+  }
+  for (const x of [-0.705, 0.705]) {
+    const strip = addMesh(
+      new THREE.BoxGeometry(0.07, 0.065, 1.02),
+      y === 0.63 ? wickerDark : wickerMaterial,
+      basket
+    );
+    strip.position.set(x, y, 0);
+  }
+}
+
+for (let i = 0; i < 10; i++) {
+  const x = -0.61 + i * 0.135;
+  for (const z of [-0.535, 0.535]) {
+    const slat = addMesh(
+      new THREE.BoxGeometry(0.052, 0.57, 0.055),
+      i % 2 ? wickerLight : wickerMaterial,
+      basket
+    );
+    slat.position.set(x, 0.36, z);
+    slat.rotation.z = (i - 4.5) * 0.009;
+  }
+}
+
+for (let i = 0; i < 7; i++) {
+  const z = -0.43 + i * 0.143;
+  for (const x of [-0.735, 0.735]) {
+    const slat = addMesh(
+      new THREE.BoxGeometry(0.055, 0.57, 0.05),
+      i % 2 ? wickerLight : wickerMaterial,
+      basket
+    );
+    slat.position.set(x, 0.36, z);
+  }
+}
+
+const rimCorners = [
+  new THREE.Vector3(-0.74, 0.705, -0.53),
+  new THREE.Vector3(0.74, 0.705, -0.53),
+  new THREE.Vector3(0.74, 0.705, 0.53),
+  new THREE.Vector3(-0.74, 0.705, 0.53)
+];
+for (let i = 0; i < 4; i++) {
+  addRod(rimCorners[i], rimCorners[(i + 1) % 4], 0.047, wickerDark, basket);
+}
+
+const basketHandle = addMesh(
+  new THREE.TorusGeometry(0.25, 0.034, 8, 28, Math.PI),
+  wickerDark,
+  basket
+);
+basketHandle.position.set(0, 0.66, 0.57);
+
+const stoolGroup = new THREE.Group();
+stoolGroup.position.z = -1.77;
+scene.add(stoolGroup);
+
+const stoolSeat = addMesh(
+  roundedSlabGeometry(1.02, 0.9, 0.12, 0.13),
+  woodMaterials[1],
+  stoolGroup
+);
+stoolSeat.rotation.x = -Math.PI / 2;
+stoolSeat.position.y = 0.99;
+
+for (const x of [-0.38, 0.38]) {
+  for (const z of [-0.31, 0.31]) {
+    addRod(
+      new THREE.Vector3(x * 1.18, 0.03, z * 1.18),
+      new THREE.Vector3(x, 0.94, z),
+      0.055,
+      darkWood,
+      stoolGroup
+    );
+  }
+}
+for (const x of [-0.4, 0.4]) {
+  addRod(
+    new THREE.Vector3(x, 0.95, -0.36),
+    new THREE.Vector3(x, 1.9, -0.46),
+    0.05,
+    darkWood,
+    stoolGroup
+  );
+}
+const stoolBack = addMesh(
+  new THREE.BoxGeometry(0.86, 0.28, 0.09),
+  woodMaterials[2],
+  stoolGroup
+);
+stoolBack.position.set(0, 1.69, -0.45);
+
+const octopusMaterial = new THREE.MeshPhysicalMaterial({
+  color: 0xd97e73,
+  roughness: 0.58,
+  metalness: 0,
+  sheen: 0.4,
+  sheenColor: new THREE.Color(0xffb3a3),
+  sheenRoughness: 0.7
+});
+const tentacleMaterial = new THREE.MeshStandardMaterial({
+  color: 0xd77a70,
+  roughness: 0.62
+});
+const suckerMaterial = new THREE.MeshStandardMaterial({
+  color: 0xf3b3a2,
+  roughness: 0.75
+});
+const darkInk = new THREE.MeshStandardMaterial({
+  color: 0x49333a,
+  roughness: 0.8
+});
+const eyeWhite = new THREE.MeshStandardMaterial({
+  color: 0xfff9eb,
+  roughness: 0.52
+});
+
+const octopus = new THREE.Group();
+octopus.position.set(0, 0, -1.66);
+scene.add(octopus);
+
+const abdomen = addMesh(new THREE.SphereGeometry(1, 40, 28), octopusMaterial, octopus);
+abdomen.scale.set(0.76, 0.78, 0.68);
+abdomen.position.y = 1.72;
+
+const head = addMesh(new THREE.SphereGeometry(1, 48, 32), octopusMaterial, octopus);
+head.scale.set(0.88, 0.84, 0.73);
+head.position.y = 2.43;
+
+const eyeGroups = [];
+const pupils = [];
+
+for (const side of [-1, 1]) {
+  const eyeGroup = new THREE.Group();
+  eyeGroup.position.set(side * 0.285, 2.64, 0.675);
+  octopus.add(eyeGroup);
+
+  const white = addMesh(new THREE.SphereGeometry(1, 24, 18), eyeWhite, eyeGroup);
+  white.scale.set(0.18, 0.215, 0.075);
+
+  const pupil = addMesh(new THREE.SphereGeometry(1, 20, 14), darkInk, eyeGroup);
+  pupil.position.z = 0.066;
+  pupil.scale.set(0.073, 0.096, 0.034);
+
+  const glint = addMesh(new THREE.SphereGeometry(1, 12, 8), eyeWhite, pupil);
+  glint.position.set(-0.022, 0.035, 0.03);
+  glint.scale.set(0.22, 0.22, 0.12);
+
+  eyeGroups.push(eyeGroup);
+  pupils.push(pupil);
+}
+
+const smileCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(-0.19, 2.35, 0.685),
+  new THREE.Vector3(-0.1, 2.285, 0.715),
+  new THREE.Vector3(0, 2.265, 0.72),
+  new THREE.Vector3(0.1, 2.285, 0.715),
+  new THREE.Vector3(0.19, 2.35, 0.685)
+]);
+addMesh(new THREE.TubeGeometry(smileCurve, 24, 0.024, 8, false), darkInk, octopus);
+
+const cheekMaterial = new THREE.MeshStandardMaterial({
+  color: 0xe9958a,
+  roughness: 0.85
+});
+for (const side of [-1, 1]) {
+  const cheek = addMesh(new THREE.SphereGeometry(1, 18, 12), cheekMaterial, octopus);
+  cheek.scale.set(0.13, 0.065, 0.025);
+  cheek.position.set(side * 0.46, 2.4, 0.61);
+
+  const browCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(side * 0.13, 2.88, 0.675),
+    new THREE.Vector3(side * 0.28, 2.925, 0.64),
+    new THREE.Vector3(side * 0.4, 2.885, 0.59)
+  ]);
+  addMesh(new THREE.TubeGeometry(browCurve, 14, 0.018, 7, false), darkInk, octopus);
+}
+
+const plant = new THREE.Group();
+plant.position.set(-3.0, 0, -0.85);
+scene.add(plant);
+
+const pot = addMesh(
+  new THREE.CylinderGeometry(0.39, 0.28, 0.56, 20),
+  new THREE.MeshStandardMaterial({ color: 0xc87958, roughness: 0.9 }),
+  plant
+);
+pot.position.y = 0.28;
+
+const soil = addMesh(
+  new THREE.CircleGeometry(0.34, 24),
+  new THREE.MeshStandardMaterial({ color: 0x604837, roughness: 1 }),
+  plant
+);
+soil.rotation.x = -Math.PI / 2;
+soil.position.y = 0.565;
+
+const leafMaterial = new THREE.MeshStandardMaterial({
+  color: 0x789b68,
+  roughness: 0.88
+});
+for (let i = 0; i < 9; i++) {
+  const angle = i / 9 * TAU + 0.25;
+  const height = 0.72 + random() * 0.62;
+  const leaf = addMesh(new THREE.SphereGeometry(1, 14, 10), leafMaterial, plant);
+  leaf.scale.set(0.13, 0.42, 0.055);
+  leaf.position.set(
+    Math.cos(angle) * 0.22,
+    0.62 + height * 0.4,
+    Math.sin(angle) * 0.22
+  );
+  leaf.quaternion.setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    new THREE.Vector3(Math.cos(angle) * 0.6, 1, Math.sin(angle) * 0.6).normalize()
+  );
+}
+
+function makeGarment(kind, color, accent, index) {
+  const root = new THREE.Group();
+  scene.add(root);
+
+  const material = new THREE.MeshStandardMaterial({
+    color,
+    map: fabricTexture,
+    roughness: 0.98
+  });
+  const accentMaterial = new THREE.MeshStandardMaterial({
+    color: accent,
+    map: fabricTexture,
+    roughness: 0.97
+  });
+
+  let upperPivot;
+  let leftPivot;
+  let rightPivot;
+
+  if (kind === "shirt") {
+    const lower = addMesh(
+      roundedSlabGeometry(0.66, 0.5, 0.036, 0.075),
+      material,
+      root
+    );
+    lower.position.y = -0.2;
+
+    upperPivot = new THREE.Group();
+    upperPivot.position.y = 0.05;
+    root.add(upperPivot);
+
+    const upper = addMesh(
+      roundedSlabGeometry(0.66, 0.42, 0.036, 0.075),
+      material,
+      upperPivot
+    );
+    upper.position.y = 0.21;
+
+    leftPivot = new THREE.Group();
+    leftPivot.position.set(-0.31, 0.31, 0.02);
+    root.add(leftPivot);
+    const leftSleeve = addMesh(
+      roundedSlabGeometry(0.31, 0.18, 0.035, 0.065),
+      material,
+      leftPivot
+    );
+    leftSleeve.position.x = -0.16;
+
+    rightPivot = new THREE.Group();
+    rightPivot.position.set(0.31, 0.31, 0.02);
+    root.add(rightPivot);
+    const rightSleeve = addMesh(
+      roundedSlabGeometry(0.31, 0.18, 0.035, 0.065),
+      material,
+      rightPivot
+    );
+    rightSleeve.position.x = 0.16;
+
+    const collar = addMesh(
+      new THREE.CircleGeometry(0.105, 24),
+      accentMaterial,
+      upperPivot
+    );
+    collar.scale.y = 0.58;
+    collar.position.set(0, 0.435, 0.024);
+
+    for (const y of [0.11, 0.24, 0.36]) {
+      const button = addMesh(
+        new THREE.SphereGeometry(0.019, 10, 8),
+        accentMaterial,
+        upperPivot
+      );
+      button.position.set(0, y, 0.032);
+    }
+  } else {
+    const lower = addMesh(
+      roundedSlabGeometry(0.82, 0.45, 0.038, 0.075),
+      material,
+      root
+    );
+    lower.position.y = -0.225;
+
+    upperPivot = new THREE.Group();
+    root.add(upperPivot);
+
+    const upper = addMesh(
+      roundedSlabGeometry(0.82, 0.45, 0.038, 0.075),
+      material,
+      upperPivot
+    );
+    upper.position.y = 0.225;
+
+    for (const y of [-0.34, 0.34]) {
+      const stripe = addMesh(
+        new THREE.BoxGeometry(0.75, 0.027, 0.013),
+        accentMaterial,
+        y < 0 ? root : upperPivot
+      );
+      stripe.position.set(0, y, 0.026);
+    }
+  }
+
+  return {
+    index,
+    kind,
+    root,
+    upperPivot,
+    leftPivot,
+    rightPivot,
+    scale: kind === "shirt" ? 0.65 : 0.62,
+    fold: 1
+  };
+}
+
+const items = [
+  makeGarment("shirt", 0x7eb5c8, 0xf1dfb8, 0),
+  makeGarment("towel", 0xe5b95e, 0xfff0c6, 1),
+  makeGarment("shirt", 0xb49ac9, 0xf2dce9, 2)
+];
+
+const forwardSpans = [
+  { start: 0.25, end: 4.15 },
+  { start: 4.45, end: 8.35 },
+  { start: 8.70, end: 12.60 }
+];
+const returnSpans = [
+  { start: 13.20, end: 14.80 },
+  { start: 15.00, end: 16.60 },
+  { start: 16.80, end: 18.40 }
+];
+
+const basketSlots = [
+  {
+    position: new THREE.Vector3(1.49, TABLE_SURFACE + 0.355, 0.51),
+    rotation: new THREE.Euler(-Math.PI / 2, -0.18, 0.06)
+  },
+  {
+    position: new THREE.Vector3(1.78, TABLE_SURFACE + 0.35, 0.28),
+    rotation: new THREE.Euler(-Math.PI / 2, 0.22, -0.07)
+  },
+  {
+    position: new THREE.Vector3(1.65, TABLE_SURFACE + 0.34, 0.045),
+    rotation: new THREE.Euler(-Math.PI / 2, -0.05, 0.08)
+  }
+];
+
+items.forEach((item, index) => {
+  item.forwardSpan = forwardSpans[index];
+  item.returnSpan = returnSpans[index];
+  item.basketPose = basketSlots[index];
+  item.stackOffsetX = [-0.025, 0.018, -0.005][index];
+  item.stackOffsetZ = [0.015, -0.015, 0.005][index];
+});
+
+function setGarmentFold(item, amount) {
+  item.fold = amount;
+
+  if (item.kind === "shirt") {
+    const bodyFold = smoothstep(0, 0.62, amount);
+    const sleeveFold = smoothstep(0.35, 1, amount);
+
+    item.upperPivot.rotation.x = Math.PI * bodyFold;
+    item.upperPivot.position.z = 0.026 * bodyFold;
+
+    item.leftPivot.rotation.z = Math.PI * 0.5 * sleeveFold;
+    item.rightPivot.rotation.z = -Math.PI * 0.5 * sleeveFold;
+    item.leftPivot.position.z = 0.02 + 0.045 * sleeveFold;
+    item.rightPivot.position.z = 0.02 + 0.045 * sleeveFold;
+  } else {
+    item.upperPivot.rotation.x = Math.PI * amount;
+    item.upperPivot.position.z = 0.027 * amount;
+  }
+}
+
+function placeItem(item, position, rx, ry, rz, fold) {
+  item.root.position.copy(position);
+  item.root.rotation.set(rx, ry, rz, "XYZ");
+  item.root.scale.setScalar(item.scale);
+  setGarmentFold(item, fold);
+}
+
+function stackOccupancy(item, time) {
+  if (time < item.forwardSpan.end) return 0;
+  if (time < item.returnSpan.start) return 1;
+
+  const v = (time - item.returnSpan.start) /
+    (item.returnSpan.end - item.returnSpan.start);
+  return 1 - smoothstep(0, 0.22, v);
+}
+
+function stackPosition(item, time) {
+  let height = 0;
+  for (let j = 0; j < item.index; j++) {
+    height += stackOccupancy(items[j], time) * 0.112;
+  }
+
+  return new THREE.Vector3(
+    -1.73 + item.stackOffsetX,
+    TABLE_SURFACE + 0.248 + height,
+    0.13 + item.stackOffsetZ
+  );
+}
+
+const foldCenter = new THREE.Vector3(-0.05, TABLE_SURFACE + 0.043, 0.14);
+
+function updateGarments(time) {
+  for (const item of items) {
+    const f = item.forwardSpan;
+    const r = item.returnSpan;
+    const basketPosition = item.basketPose.position;
+    const basketRotation = item.basketPose.rotation;
+
+    if (time < f.start) {
+      placeItem(
+        item,
+        basketPosition,
+        basketRotation.x,
+        basketRotation.y,
+        basketRotation.z,
+        1
+      );
+    } else if (time < f.end) {
+      const u = (time - f.start) / (f.end - f.start);
+      const hover = new THREE.Vector3(
+        0.03 + (item.index - 1) * 0.06,
+        2.22,
+        0.53
+      );
+      const target = stackPosition(item, time);
+
+      if (u < 0.14) {
+        placeItem(
+          item,
+          basketPosition,
+          basketRotation.x,
+          basketRotation.y,
+          basketRotation.z,
+          1
+        );
+      } else if (u < 0.34) {
+        const q = smoothstep(0.14, 0.34, u);
+        const position = basketPosition.clone().lerp(hover, q);
+        position.y += Math.sin(q * Math.PI) * 0.29;
+        placeItem(
+          item,
+          position,
+          THREE.MathUtils.lerp(basketRotation.x, 0.08, q),
+          THREE.MathUtils.lerp(basketRotation.y, 0, q),
+          THREE.MathUtils.lerp(basketRotation.z, 0, q),
+          1 - smoothstep(0.14, 0.315, u)
+        );
+      } else if (u < 0.54) {
+        const q = smoothstep(0.34, 0.54, u);
+        const position = hover.clone().lerp(foldCenter, q);
+        position.y += Math.sin(q * Math.PI) * 0.075;
+        placeItem(
+          item,
+          position,
+          THREE.MathUtils.lerp(0.08, -Math.PI / 2, q),
+          0,
+          0,
+          0
+        );
+      } else if (u < 0.78) {
+        placeItem(
+          item,
+          foldCenter,
+          -Math.PI / 2,
+          0,
+          0,
+          smoothstep(0.54, 0.78, u)
+        );
+      } else if (u < 0.94) {
+        const q = smoothstep(0.78, 0.94, u);
+        const position = foldCenter.clone().lerp(target, q);
+        position.y += Math.sin(q * Math.PI) * 0.18;
+        placeItem(item, position, -Math.PI / 2, 0, 0, 1);
+      } else {
+        placeItem(item, target, -Math.PI / 2, 0, 0, 1);
+      }
+    } else if (time < r.start) {
+      placeItem(item, stackPosition(item, time), -Math.PI / 2, 0, 0, 1);
+    } else if (time < r.end) {
+      const v = (time - r.start) / (r.end - r.start);
+      const start = stackPosition(item, r.start);
+
+      if (v < 0.15) {
+        placeItem(item, start, -Math.PI / 2, 0, 0, 1);
+      } else if (v < 0.72) {
+        const q = smoothstep(0.15, 0.72, v);
+        const position = start.clone().lerp(basketPosition, q);
+        position.y += Math.sin(q * Math.PI) * 0.28;
+        placeItem(
+          item,
+          position,
+          -Math.PI / 2,
+          THREE.MathUtils.lerp(0, basketRotation.y, q),
+          THREE.MathUtils.lerp(0, basketRotation.z, q),
+          1
+        );
+      } else {
+        const q = smoothstep(0.72, 1, v);
+        const position = basketPosition.clone();
+        position.y += Math.sin(q * Math.PI) * 0.065 * (1 - q);
+        placeItem(
+          item,
+          position,
+          basketRotation.x,
+          basketRotation.y,
+          basketRotation.z,
+          1
+        );
+      }
+    } else {
+      placeItem(
+        item,
+        basketPosition,
+        basketRotation.x,
+        basketRotation.y,
+        basketRotation.z,
+        1
+      );
+    }
+  }
+
+  for (const item of items) item.root.updateMatrixWorld(true);
+}
+
+function getInteraction(time) {
+  for (const item of items) {
+    if (time >= item.forwardSpan.start && time < item.forwardSpan.end) {
+      return {
+        item,
+        mode: "forward",
+        amount: (time - item.forwardSpan.start) /
+          (item.forwardSpan.end - item.forwardSpan.start)
+      };
+    }
+    if (time >= item.returnSpan.start && time < item.returnSpan.end) {
+      return {
+        item,
+        mode: "return",
+        amount: (time - item.returnSpan.start) /
+          (item.returnSpan.end - item.returnSpan.start)
+      };
+    }
+  }
+  return null;
+}
+
+const armCylinderGeometry = new THREE.CylinderGeometry(1, 1, 1, 10, 1);
+const armJointGeometry = new THREE.SphereGeometry(1, 12, 8);
+const cupGeometry = new THREE.SphereGeometry(1, 10, 7);
+const yAxis = new THREE.Vector3(0, 1, 0);
+
+class Tentacle {
+  constructor(origin, worker = false) {
+    this.origin = origin.clone();
+    this.worker = worker;
+    this.group = new THREE.Group();
+    scene.add(this.group);
+
+    this.segments = [];
+    this.joints = [];
+    this.cups = [];
+
+    const segmentCount = 14;
+    for (let i = 0; i < segmentCount; i++) {
+      this.segments.push(addMesh(armCylinderGeometry, tentacleMaterial, this.group));
+      this.joints.push(addMesh(armJointGeometry, tentacleMaterial, this.group));
+    }
+
+    for (let i = 0; i < 7; i++) {
+      this.cups.push(addMesh(cupGeometry, suckerMaterial, this.group));
+    }
+  }
+
+  update(start, end, phase) {
+    const delta = new THREE.Vector3().subVectors(end, start);
+    const p1 = start.clone().lerp(end, 0.28);
+    p1.y -= this.worker ? 0.3 : 0.24;
+    p1.z += this.worker ? 0.42 : 0.3;
+
+    const p2 = end.clone().lerp(start, 0.24);
+    p2.y += this.worker ? 0.31 : 0.2;
+    p2.z += this.worker ? 0.1 : 0.14;
+
+    if (end.z > -0.4) p1.y = Math.max(p1.y, 1.57);
+
+    const curve = new THREE.CubicBezierCurve3(start, p1, p2, end);
+    const points = [];
+    for (let i = 0; i <= this.segments.length; i++) {
+      points.push(curve.getPoint(i / this.segments.length));
+    }
+
+    for (let i = 0; i < this.segments.length; i++) {
+      const t = i / (this.segments.length - 1);
+      const radius = THREE.MathUtils.lerp(
+        this.worker ? 0.115 : 0.12,
+        0.033,
+        Math.pow(t, 0.82)
+      );
+
+      const a = points[i];
+      const b = points[i + 1];
+      const direction = new THREE.Vector3().subVectors(b, a);
+      const length = direction.length();
+
+      const segment = this.segments[i];
+      segment.position.copy(a).add(b).multiplyScalar(0.5);
+      segment.quaternion.setFromUnitVectors(yAxis, direction.normalize());
+      segment.scale.set(radius, length, radius);
+
+      this.joints[i].position.copy(a);
+      this.joints[i].scale.setScalar(radius * 1.025);
+    }
+
+    for (let i = 0; i < this.cups.length; i++) {
+      const pointIndex = 2 + i * 2;
+      const a = points[pointIndex];
+      const b = points[Math.min(pointIndex + 1, points.length - 1)];
+      const tangent = new THREE.Vector3().subVectors(b, a).normalize();
+      const normal = new THREE.Vector3(0, -1, 0);
+      normal.addScaledVector(tangent, -normal.dot(tangent));
+      if (normal.lengthSq() < 0.01) normal.set(0, 0, 1);
+      normal.normalize();
+
+      const t = pointIndex / (this.segments.length - 1);
+      const radius = THREE.MathUtils.lerp(
+        this.worker ? 0.115 : 0.12,
+        0.033,
+        Math.pow(t, 0.82)
+      );
+      const cup = this.cups[i];
+      cup.position.copy(a).addScaledVector(normal, radius * 0.74);
+      cup.quaternion.setFromUnitVectors(yAxis, normal);
+      cup.scale.set(0.037, 0.013, 0.037);
+    }
+  }
+}
+
+const mainArm = new Tentacle(new THREE.Vector3(0.62, 1.78, 0.54), true);
+const helperArm = new Tentacle(new THREE.Vector3(-0.62, 1.78, 0.54), true);
+
+const restArms = [
+  new Tentacle(new THREE.Vector3(-0.7, 1.65, 0.15)),
+  new Tentacle(new THREE.Vector3(-0.42, 1.55, 0.52)),
+  new Tentacle(new THREE.Vector3(0.42, 1.55, 0.52)),
+  new Tentacle(new THREE.Vector3(0.7, 1.65, 0.15)),
+  new Tentacle(new THREE.Vector3(-0.55, 1.65, -0.35)),
+  new Tentacle(new THREE.Vector3(0.55, 1.65, -0.35))
+];
+
+const restTargets = [
+  new THREE.Vector3(-1.82, 0.38, 0.22),
+  new THREE.Vector3(-1.03, 0.52, 1.08),
+  new THREE.Vector3(1.03, 0.52, 1.08),
+  new THREE.Vector3(1.82, 0.38, 0.22),
+  new THREE.Vector3(-1.25, 0.16, -1.18),
+  new THREE.Vector3(1.25, 0.16, -1.18)
+];
+
+function blinkAmount(time) {
+  let amount = 1;
+  for (const center of [3.75, 10.85, 18.05]) {
+    if (time > center - 0.14 && time < center + 0.14) {
+      const q = (time - (center - 0.14)) / 0.28;
+      amount = Math.min(amount, 1 - 0.93 * Math.pow(Math.sin(q * Math.PI), 2));
+    }
+  }
+  return amount;
+}
+
+const dustCount = 55;
+const dustBase = new Float32Array(dustCount * 3);
+const dustPositions = new Float32Array(dustCount * 3);
+for (let i = 0; i < dustCount; i++) {
+  dustBase[i * 3] = (random() - 0.5) * 7;
+  dustBase[i * 3 + 1] = 0.6 + random() * 4;
+  dustBase[i * 3 + 2] = (random() - 0.5) * 5;
+}
+const dustGeometry = new THREE.BufferGeometry();
+dustGeometry.setAttribute(
+  "position",
+  new THREE.BufferAttribute(dustPositions, 3)
+);
+const dust = new THREE.Points(
+  dustGeometry,
+  new THREE.PointsMaterial({
+    color: 0xffedc8,
+    size: 0.026,
+    transparent: true,
+    opacity: 0.42,
+    depthWrite: false
+  })
+);
+scene.add(dust);
+
+function updateArms(interaction, phase) {
+  const mainRest = new THREE.Vector3(
+    1.18 + Math.sin(phase * 3) * 0.035,
+    1.62 + Math.sin(phase * 2) * 0.025,
+    -0.05
+  );
+  const helperRest = new THREE.Vector3(
+    -1.08 + Math.cos(phase * 3) * 0.035,
+    1.62,
+    -0.02
+  );
+
+  const mainTarget = mainRest.clone();
+  const helperTarget = helperRest.clone();
+
+  if (interaction) {
+    const { item, mode, amount } = interaction;
+    const grip = item.root.localToWorld(
+      new THREE.Vector3(0, -0.36, 0.065)
+    );
+
+    let contact;
+    if (mode === "forward") {
+      if (amount < 0.14) contact = smoothstep(0, 0.14, amount);
+      else if (amount > 0.94) contact = 1 - smoothstep(0.94, 1, amount);
+      else contact = 1;
+    } else {
+      if (amount < 0.15) contact = smoothstep(0, 0.15, amount);
+      else if (amount > 0.82) contact = 1 - smoothstep(0.82, 1, amount);
+      else contact = 1;
+    }
+    mainTarget.lerpVectors(mainRest, grip, contact);
+
+    if (mode === "forward") {
+      if (amount < 0.84) {
+        const helperContact =
+          smoothstep(0.08, 0.16, amount) *
+          (1 - smoothstep(0.77, 0.84, amount));
+        const flapPoint = item.upperPivot.localToWorld(
+          new THREE.Vector3(0, 0.34, 0.065)
+        );
+        helperTarget.lerpVectors(helperRest, flapPoint, helperContact);
+      }
+      if (amount > 0.8) {
+        const sidePoint = item.root.localToWorld(
+          new THREE.Vector3(0.25, -0.16, 0.065)
+        );
+        const sideContact =
+          smoothstep(0.8, 0.87, amount) *
+          (1 - smoothstep(0.94, 1, amount));
+        helperTarget.lerpVectors(helperRest, sidePoint, sideContact);
+      }
+    } else if (amount > 0.12 && amount < 0.84) {
+      const sidePoint = item.root.localToWorld(
+        new THREE.Vector3(0.25, -0.16, 0.065)
+      );
+      const helperContact =
+        smoothstep(0.12, 0.2, amount) *
+        (1 - smoothstep(0.76, 0.85, amount));
+      helperTarget.lerpVectors(helperRest, sidePoint, helperContact);
+    }
+  }
+
+  const mainStart = octopus.localToWorld(mainArm.origin.clone());
+  const helperStart = octopus.localToWorld(helperArm.origin.clone());
+  mainArm.update(mainStart, mainTarget, phase);
+  helperArm.update(helperStart, helperTarget, phase);
+
+  for (let i = 0; i < restArms.length; i++) {
+    const target = restTargets[i].clone();
+    target.x += Math.sin(phase * 2 + i * 0.8) * 0.055;
+    target.y += Math.cos(phase * 3 + i) * 0.045;
+    target.z += Math.sin(phase * 2 + i * 0.7) * 0.045;
+    const start = octopus.localToWorld(restArms[i].origin.clone());
+    restArms[i].update(start, target, phase);
+  }
+}
+
+function updateDust(phase) {
+  for (let i = 0; i < dustCount; i++) {
+    const n = i * 3;
+    dustPositions[n] = dustBase[n] + Math.sin(phase * 3 + i) * 0.07;
+    dustPositions[n + 1] =
+      dustBase[n + 1] + Math.sin(phase * 2 + i * 0.73) * 0.12;
+    dustPositions[n + 2] =
+      dustBase[n + 2] + Math.cos(phase * 3 + i * 0.51) * 0.06;
+  }
+  dustGeometry.attributes.position.needsUpdate = true;
+}
+
+function resize() {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+}
+addEventListener("resize", resize);
+
+let startTime = null;
+
+renderer.setAnimationLoop(now => {
+  if (startTime === null) startTime = now;
+  const time = ((now - startTime) / 1000) % LOOP;
+  const phase = (time / LOOP) * TAU;
+
+  updateGarments(time);
+  const interaction = getInteraction(time);
+
+  const attentionTarget = interaction
+    ? interaction.item.root.position.clone()
+    : new THREE.Vector3(0, 1.65, 0.35);
+
+  octopus.position.y = 0.025 * Math.sin(phase * 2);
+  octopus.rotation.y =
+    0.018 * Math.sin(phase * 2) +
+    THREE.MathUtils.clamp(attentionTarget.x * 0.025, -0.07, 0.07);
+  octopus.rotation.z = 0.014 * Math.sin(phase * 3);
+  octopus.updateMatrixWorld(true);
+
+  const localTarget = octopus.worldToLocal(attentionTarget);
+  for (let i = 0; i < eyeGroups.length; i++) {
+    const eye = eyeGroups[i];
+    const pupil = pupils[i];
+    const dx = localTarget.x - eye.position.x;
+    const dy = localTarget.y - eye.position.y;
+    pupil.position.x = THREE.MathUtils.clamp(dx * 0.12, -0.047, 0.047);
+    pupil.position.y = THREE.MathUtils.clamp(dy * 0.075, -0.042, 0.042);
+    eye.scale.y = blinkAmount(time);
+  }
+
+  updateArms(interaction, phase);
+  updateDust(phase);
+
+  const aspect = camera.aspect;
+  const radius = 7.4 * Math.max(1, 1.05 / aspect);
+  const theta = 0.72 * Math.sin(phase);
+  camera.position.set(
+    Math.sin(theta) * radius,
+    3.55 + 0.17 * Math.cos(phase * 2),
+    Math.cos(theta) * radius - 0.25
+  );
+  camera.lookAt(
+    -0.04 * Math.sin(phase),
+    1.73 + 0.025 * Math.cos(phase * 2),
+    -0.22
+  );
+
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
